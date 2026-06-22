@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI智能组卷系统 - 参数配置平台 (3925)</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <h1>AI智能组卷系统</h1>
+                <p class="subtitle">试题分层匹配 · AI算力搭载 8925 端口</p>
+            </div>
+            <div class="header-right">
+                <span class="status-badge" id="serverStatus">
+                    <span class="status-dot"></span>
+                    <span id="statusText">检测中...</span>
+                </span>
+                <span class="platform-tag">参数配置平台 3925</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <aside class="config-panel">
+                <div class="panel-title">
+                    <span class="panel-icon">⚙️</span>
+                    组卷参数配置
+                </div>
+
+                <div class="form-section">
+                    <div class="form-label">
+                        <label for="totalScore">试卷总分</label>
+                        <span class="form-tip">输入试卷的目标总分数值</span>
+                    </div>
+                    <div class="input-group">
+                        <input type="number" id="totalScore" value="100" min="10" max="500">
+                        <span class="input-suffix">分</span>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <div class="form-label">
+                        <label>知识点覆盖清单</label>
+                        <span class="form-tip">勾选需要覆盖的知识点，可设置权重</span>
+                    </div>
+                    <div class="knowledge-controls">
+                        <button type="button" class="btn-secondary" id="selectAll">全选</button>
+                        <button type="button" class="btn-secondary" id="clearAll">清空</button>
+                    </div>
+                    <div class="knowledge-list" id="knowledgeList">
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <div class="form-label">
+                        <label>难易题目占比</label>
+                        <span class="form-tip">三项之和必须为 100%</span>
+                    </div>
+                    <div class="difficulty-config">
+                        <div class="difficulty-item difficulty-simple">
+                            <div class="difficulty-label">
+                                <span class="diff-tag diff-simple">简单</span>
+                            </div>
+                            <div class="difficulty-input-group">
+                                <input type="number" class="diff-input" id="diffSimple" value="30" min="0" max="100">
+                                <span class="input-suffix">%</span>
+                            </div>
+                        </div>
+                        <div class="difficulty-item difficulty-medium">
+                            <div class="difficulty-label">
+                                <span class="diff-tag diff-medium">中等</span>
+                            </div>
+                            <div class="difficulty-input-group">
+                                <input type="number" class="diff-input" id="diffMedium" value="50" min="0" max="100">
+                                <span class="input-suffix">%</span>
+                            </div>
+                        </div>
+                        <div class="difficulty-item difficulty-hard">
+                            <div class="difficulty-label">
+                                <span class="diff-tag diff-hard">困难</span>
+                            </div>
+                            <div class="difficulty-input-group">
+                                <input type="number" class="diff-input" id="diffHard" value="20" min="0" max="100">
+                                <span class="input-suffix">%</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="ratio-total">
+                        合计：<span id="ratioTotal" class="ratio-value ratio-ok">100%</span>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <div class="form-label">
+                        <label for="paperCount">生成试卷套数</label>
+                        <span class="form-tip">AI 将输出多套均衡试卷供选择</span>
+                    </div>
+                    <div class="input-group">
+                        <input type="number" id="paperCount" value="3" min="1" max="5">
+                        <span class="input-suffix">套</span>
+                    </div>
+                </div>
+
+                <div class="validation-box" id="validationBox" style="display:none;">
+                    <div class="validation-title">参数校验结果</div>
+                    <div id="validationContent"></div>
+                </div>
+
+                <div class="button-group">
+                    <button type="button" class="btn-secondary" id="validateBtn">
+                        <span>🔍</span>
+                        校验匹配逻辑
+                    </button>
+                    <button type="button" class="btn-primary" id="generateBtn">
+                        <span>🤖</span>
+                        AI 智能组卷
+                    </button>
+                </div>
+            </aside>
+
+            <section class="result-panel">
+                <div class="panel-title">
+                    <span class="panel-icon">📋</span>
+                    组卷结果
+                    <span class="result-count" id="resultCount" style="display:none;"></span>
+                </div>
+
+                <div class="empty-state" id="emptyState">
+                    <div class="empty-icon">📝</div>
+                    <h3>等待组卷</h3>
+                    <p>请在左侧配置参数后点击「AI 智能组卷」</p>
+                    <ul class="feature-list">
+                        <li>✅ AI 遍历题库智能筛选</li>
+                        <li>✅ 自动剔除知识点重复</li>
+                        <li>✅ 难度分布均衡匹配</li>
+                        <li>✅ 输出多套均衡方案</li>
+                    </ul>
+                </div>
+
+                <div class="result-content" id="resultContent" style="display:none;">
+                    <div class="result-summary" id="resultSummary"></div>
+                    <div class="papers-container" id="papersContainer"></div>
+                </div>
+
+                <div class="loading-state" id="loadingState" style="display:none;">
+                    <div class="loading-spinner"></div>
+                    <p>AI 正在遍历题库，智能匹配试题...</p>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
