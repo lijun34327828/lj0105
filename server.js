@@ -96,6 +96,22 @@ function calculateDifficultyRatio(paper) {
   };
 }
 
+function calculateDifficultyScoreRatio(paper) {
+  const total = calculatePaperScore(paper);
+  if (total === 0) return { simple: 0, medium: 0, hard: 0 };
+  let simple = 0, medium = 0, hard = 0;
+  paper.forEach(q => {
+    if (q.difficulty === '简单') simple += q.score;
+    else if (q.difficulty === '中等') medium += q.score;
+    else if (q.difficulty === '困难') hard += q.score;
+  });
+  return {
+    simple: simple / total,
+    medium: medium / total,
+    hard: hard / total
+  };
+}
+
 function hasKnowledgeDuplication(paper, knowledgeList) {
   const knowledgeCount = {};
   knowledgeList.forEach(k => knowledgeCount[k] = 0);
@@ -108,30 +124,54 @@ function hasKnowledgeDuplication(paper, knowledgeList) {
   if (values.length === 0) return true;
   const max = Math.max(...values);
   const min = Math.min(...values);
-  return max - min > 2;
+  return max - min > 3;
+}
+
+function validatePaper(paper, targetScore, knowledgeList, targetRatio) {
+  const errors = [];
+  const actualScore = calculatePaperScore(paper);
+  if (actualScore !== targetScore) {
+    errors.push(`总分不达标：实际${actualScore}分，目标${targetScore}分`);
+  }
+  const coverage = calculateKnowledgeCoverage(paper, knowledgeList);
+  if (coverage < 1) {
+    errors.push(`知识点未全覆盖：覆盖率${(coverage * 100).toFixed(1)}%`);
+  }
+  const scoreRatio = calculateDifficultyScoreRatio(paper);
+  const ratioTolerance = 0.06;
+  if (Math.abs(scoreRatio.simple - targetRatio.simple) > ratioTolerance) {
+    errors.push(`简单题占比偏差：实际${(scoreRatio.simple * 100).toFixed(1)}%，目标${(targetRatio.simple * 100).toFixed(1)}%`);
+  }
+  if (Math.abs(scoreRatio.medium - targetRatio.medium) > ratioTolerance) {
+    errors.push(`中等题占比偏差：实际${(scoreRatio.medium * 100).toFixed(1)}%，目标${(targetRatio.medium * 100).toFixed(1)}%`);
+  }
+  if (Math.abs(scoreRatio.hard - targetRatio.hard) > ratioTolerance) {
+    errors.push(`困难题占比偏差：实际${(scoreRatio.hard * 100).toFixed(1)}%，目标${(targetRatio.hard * 100).toFixed(1)}%`);
+  }
+  return { valid: errors.length === 0, errors };
 }
 
 function calculateFitness(paper, targetScore, knowledgeList, targetRatio, knowledgeWeights) {
   let score = 0;
   const actualScore = calculatePaperScore(paper);
   const scoreDiff = Math.abs(actualScore - targetScore);
-  score -= scoreDiff * 10;
+  score -= scoreDiff * 50;
 
   const coverage = calculateKnowledgeCoverage(paper, knowledgeList);
   if (coverage < 1) {
-    score -= (1 - coverage) * 200;
+    score -= (1 - coverage) * 500;
   } else {
-    score += 50;
+    score += 100;
   }
 
-  const actualRatio = calculateDifficultyRatio(paper);
-  const ratioDiff = Math.abs(actualRatio.simple - targetRatio.simple) +
-                    Math.abs(actualRatio.medium - targetRatio.medium) +
-                    Math.abs(actualRatio.hard - targetRatio.hard);
-  score -= ratioDiff * 80;
+  const scoreRatio = calculateDifficultyScoreRatio(paper);
+  const ratioDiff = Math.abs(scoreRatio.simple - targetRatio.simple) +
+                    Math.abs(scoreRatio.medium - targetRatio.medium) +
+                    Math.abs(scoreRatio.hard - targetRatio.hard);
+  score -= ratioDiff * 300;
 
   if (hasKnowledgeDuplication(paper, knowledgeList)) {
-    score -= 100;
+    score -= 150;
   }
 
   paper.forEach(q => {
@@ -145,40 +185,399 @@ function calculateFitness(paper, targetScore, knowledgeList, targetRatio, knowle
   return score;
 }
 
-function generateSinglePaper(targetScore, knowledgeList, targetRatio, knowledgeWeights, excludeIds = []) {
-  const availableQuestions = questionBank.filter(q => !excludeIds.includes(q.id));
+function generateSinglePaper(targetScore, knowledgeList, targetRatio, knowledgeWeights) {
+  const targetSimpleScore = targetScore * targetRatio.simple;
+  const targetMediumScore = targetScore * targetRatio.medium;
+  const targetHardScore = targetScore * targetRatio.hard;
+
+  const availableQuestions = questionBank.filter(q =>
+    q.knowledge.some(k => knowledgeList.includes(k))
+  );
+
+  const questionsByKnowledge = {};
+  knowledgeList.forEach(k => {
+    questionsByKnowledge[k] = availableQuestions.filter(q =>
+      q.knowledge.includes(k)
+    );
+  });
+
   let bestPaper = [];
   let bestFitness = -Infinity;
+  let bestErrors = [];
+  const totalAttempts = 500;
 
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
     let currentPaper = [];
     let currentScore = 0;
-    const usedKnowledge = {};
-    const shuffled = shuffleArray(availableQuestions);
+    let simpleScore = 0, mediumScore = 0, hardScore = 0;
+    const coveredKnowledge = new Set();
+    const usedIdsThisPaper = new Set();
+    const knowledgeQuestionCount = {};
+    knowledgeList.forEach(k => knowledgeQuestionCount[k] = 0);
 
-    for (const q of shuffled) {
-      if (currentScore + q.score > targetScore + 5) continue;
-      if (currentScore >= targetScore - 5 && currentScore <= targetScore + 5) break;
-
-      let tooMuch = false;
-      q.knowledge.forEach(k => {
-        if (knowledgeList.includes(k) && (usedKnowledge[k] || 0) >= 3) {
-          tooMuch = true;
-        }
-      });
-      if (tooMuch) continue;
-
+    const tryAddQuestion = (q) => {
+      if (usedIdsThisPaper.has(q.id)) return false;
+      if (currentScore + q.score > targetScore) return false;
       currentPaper.push(q);
       currentScore += q.score;
+      usedIdsThisPaper.add(q.id);
+      if (q.difficulty === '简单') simpleScore += q.score;
+      else if (q.difficulty === '中等') mediumScore += q.score;
+      else hardScore += q.score;
       q.knowledge.forEach(k => {
-        usedKnowledge[k] = (usedKnowledge[k] || 0) + 1;
+        if (knowledgeList.includes(k)) {
+          coveredKnowledge.add(k);
+          knowledgeQuestionCount[k]++;
+        }
       });
+      return true;
+    };
+
+    const difficultyOrder = (() => {
+      if (attempt % 6 === 0) return ['简单', '中等', '困难'];
+      if (attempt % 6 === 1) return ['困难', '中等', '简单'];
+      if (attempt % 6 === 2) return ['中等', '简单', '困难'];
+      if (attempt % 6 === 3) return ['简单', '困难', '中等'];
+      if (attempt % 6 === 4) return ['中等', '困难', '简单'];
+      return ['困难', '简单', '中等'];
+    })();
+
+    const shuffledKnowledge = shuffleArray([...knowledgeList]);
+    for (const kp of shuffledKnowledge) {
+      if (coveredKnowledge.has(kp)) continue;
+      const kpQuestions = shuffleArray(questionsByKnowledge[kp]);
+      const sorted = [];
+      difficultyOrder.forEach(d => kpQuestions.filter(q => q.difficulty === d).forEach(q => sorted.push(q)));
+      let added = false;
+      for (const q of sorted) {
+        const qDiffScore = q.difficulty === '简单' ? simpleScore : q.difficulty === '中等' ? mediumScore : hardScore;
+        const qTarget = q.difficulty === '简单' ? targetSimpleScore : q.difficulty === '中等' ? targetMediumScore : targetHardScore;
+        if (qDiffScore + q.score > qTarget * 1.25 && !added) continue;
+        if (tryAddQuestion(q)) { added = true; break; }
+      }
+      if (!added) {
+        for (const q of kpQuestions) {
+          if (tryAddQuestion(q)) { added = true; break; }
+        }
+      }
+    }
+
+    const addByDifficulty = (diff, targetDiffScore, maxExcessRatio = 1.15) => {
+      const pool = shuffleArray(availableQuestions.filter(q => q.difficulty === diff));
+      const curDiffScore = diff === '简单' ? simpleScore : diff === '中等' ? mediumScore : hardScore;
+      let scoreToAdd = targetDiffScore - curDiffScore;
+      if (scoreToAdd <= 0) return;
+      for (const q of pool) {
+        if (scoreToAdd <= 0) break;
+        if (usedIdsThisPaper.has(q.id)) continue;
+        const remainingTotal = targetScore - currentScore;
+        if (q.score > remainingTotal) continue;
+        const qDiffScore = diff === '简单' ? simpleScore : diff === '中等' ? mediumScore : hardScore;
+        if (qDiffScore + q.score > targetDiffScore * maxExcessRatio && remainingTotal > q.score) continue;
+        if (tryAddQuestion(q)) {
+          scoreToAdd -= q.score;
+        }
+      }
+    };
+
+    addByDifficulty('简单', targetSimpleScore, 1.2);
+    addByDifficulty('中等', targetMediumScore, 1.2);
+    addByDifficulty('困难', targetHardScore, 1.25);
+
+    if (currentScore < targetScore) {
+      for (let rep = 0; rep < 30 && currentScore < targetScore; rep++) {
+        let progress = false;
+        const remaining = targetScore - currentScore;
+        for (const diff of shuffleArray(['简单', '中等', '困难'])) {
+          const pool = shuffleArray(availableQuestions.filter(q => q.difficulty === diff));
+          for (const q of pool) {
+            if (usedIdsThisPaper.has(q.id)) continue;
+            if (q.score > remaining) continue;
+            const rest = remaining - q.score;
+            if (rest === 0) {
+              tryAddQuestion(q);
+              progress = true;
+              break;
+            }
+            const canReach = availableQuestions.some(qq =>
+              !usedIdsThisPaper.has(qq.id) && qq.id !== q.id && qq.score <= rest
+            );
+            if (canReach || rest < 3) {
+              if (tryAddQuestion(q)) {
+                progress = true;
+                break;
+              }
+            }
+          }
+          if (currentScore === targetScore) break;
+        }
+        if (!progress) break;
+      }
+    }
+
+    for (let swapAttempt = 0; swapAttempt < 150 && (currentScore !== targetScore || coveredKnowledge.size < knowledgeList.length); swapAttempt++) {
+      let swapped = false;
+
+      if (coveredKnowledge.size < knowledgeList.length) {
+        const missingKP = knowledgeList.find(k => !coveredKnowledge.has(k));
+        if (missingKP) {
+          const candidates = shuffleArray(questionsByKnowledge[missingKP].filter(q =>
+            !usedIdsThisPaper.has(q.id)
+          ));
+          for (const cand of candidates) {
+            const replaceable = shuffleArray(currentPaper.filter(q =>
+              q.score === cand.score ||
+              (currentScore - q.score + cand.score <= targetScore)
+            ));
+            for (const r of replaceable) {
+              const rKPs = r.knowledge.filter(k => knowledgeList.includes(k));
+              const allRKPCovered = rKPs.every(k => (knowledgeQuestionCount[k] || 0) > 1);
+              if (!allRKPCovered) continue;
+              const newScore = currentScore - r.score + cand.score;
+              if (newScore > targetScore) continue;
+              const idx = currentPaper.findIndex(qq => qq.id === r.id);
+              if (idx < 0) continue;
+              currentPaper.splice(idx, 1);
+              currentScore -= r.score;
+              usedIdsThisPaper.delete(r.id);
+              if (r.difficulty === '简单') simpleScore -= r.score;
+              else if (r.difficulty === '中等') mediumScore -= r.score;
+              else hardScore -= r.score;
+              r.knowledge.forEach(k => {
+                if (knowledgeList.includes(k)) {
+                  knowledgeQuestionCount[k]--;
+                  if (knowledgeQuestionCount[k] === 0) coveredKnowledge.delete(k);
+                }
+              });
+
+              if (tryAddQuestion(cand)) {
+                swapped = true;
+                break;
+              } else {
+                currentPaper.splice(idx, 0, r);
+                currentScore += r.score;
+                usedIdsThisPaper.add(r.id);
+                if (r.difficulty === '简单') simpleScore += r.score;
+                else if (r.difficulty === '中等') mediumScore += r.score;
+                else hardScore += r.score;
+                r.knowledge.forEach(k => {
+                  if (knowledgeList.includes(k)) {
+                    knowledgeQuestionCount[k]++;
+                    coveredKnowledge.add(k);
+                  }
+                });
+              }
+            }
+            if (swapped) break;
+          }
+        }
+      }
+
+      if (!swapped && currentScore !== targetScore) {
+        const gap = targetScore - currentScore;
+        if (gap > 0) {
+          const addPool = shuffleArray(availableQuestions.filter(q =>
+            !usedIdsThisPaper.has(q.id) && q.score === gap
+          ));
+          for (const q of addPool) {
+            if (tryAddQuestion(q)) { swapped = true; break; }
+          }
+          if (!swapped) {
+            const swapPool = shuffleArray(currentPaper);
+            for (const r of swapPool) {
+              const newQPool = shuffleArray(availableQuestions.filter(q =>
+                !usedIdsThisPaper.has(q.id) && q.score === r.score + gap
+              ));
+              for (const cand of newQPool) {
+                const rKPs = r.knowledge.filter(k => knowledgeList.includes(k));
+                const allRKPCovered = rKPs.every(k => (knowledgeQuestionCount[k] || 0) > 1);
+                if (!allRKPCovered) continue;
+                const idx = currentPaper.findIndex(qq => qq.id === r.id);
+                currentPaper.splice(idx, 1);
+                currentScore -= r.score;
+                usedIdsThisPaper.delete(r.id);
+                if (r.difficulty === '简单') simpleScore -= r.score;
+                else if (r.difficulty === '中等') mediumScore -= r.score;
+                else hardScore -= r.score;
+                r.knowledge.forEach(k => {
+                  if (knowledgeList.includes(k)) {
+                    knowledgeQuestionCount[k]--;
+                    if (knowledgeQuestionCount[k] === 0) coveredKnowledge.delete(k);
+                  }
+                });
+                if (tryAddQuestion(cand)) {
+                  swapped = true;
+                  break;
+                } else {
+                  currentPaper.splice(idx, 0, r);
+                  currentScore += r.score;
+                  usedIdsThisPaper.add(r.id);
+                  if (r.difficulty === '简单') simpleScore += r.score;
+                  else if (r.difficulty === '中等') mediumScore += r.score;
+                  else hardScore += r.score;
+                  r.knowledge.forEach(k => {
+                    if (knowledgeList.includes(k)) {
+                      knowledgeQuestionCount[k]++;
+                      coveredKnowledge.add(k);
+                    }
+                  });
+                }
+              }
+              if (swapped) break;
+            }
+          }
+        } else if (gap < 0) {
+          const overflow = -gap;
+          const swapPool = shuffleArray(currentPaper);
+          for (const r of swapPool) {
+            const newQPool = shuffleArray(availableQuestions.filter(q =>
+              !usedIdsThisPaper.has(q.id) && q.score === r.score - overflow
+            ));
+            for (const cand of newQPool) {
+              const rKPs = r.knowledge.filter(k => knowledgeList.includes(k));
+              const allRKPCovered = rKPs.every(k => (knowledgeQuestionCount[k] || 0) > 1);
+              if (!allRKPCovered) continue;
+              const candAddsNewKP = cand.knowledge.some(k =>
+                knowledgeList.includes(k) && !coveredKnowledge.has(k)
+              );
+              if (!candAddsNewKP && coveredKnowledge.size < knowledgeList.length) continue;
+              const idx = currentPaper.findIndex(qq => qq.id === r.id);
+              currentPaper.splice(idx, 1);
+              currentScore -= r.score;
+              usedIdsThisPaper.delete(r.id);
+              if (r.difficulty === '简单') simpleScore -= r.score;
+              else if (r.difficulty === '中等') mediumScore -= r.score;
+              else hardScore -= r.score;
+              r.knowledge.forEach(k => {
+                if (knowledgeList.includes(k)) {
+                  knowledgeQuestionCount[k]--;
+                  if (knowledgeQuestionCount[k] === 0) coveredKnowledge.delete(k);
+                }
+              });
+              if (tryAddQuestion(cand)) {
+                swapped = true;
+                break;
+              } else {
+                currentPaper.splice(idx, 0, r);
+                currentScore += r.score;
+                usedIdsThisPaper.add(r.id);
+                if (r.difficulty === '简单') simpleScore += r.score;
+                else if (r.difficulty === '中等') mediumScore += r.score;
+                else hardScore += r.score;
+                r.knowledge.forEach(k => {
+                  if (knowledgeList.includes(k)) {
+                    knowledgeQuestionCount[k]++;
+                    coveredKnowledge.add(k);
+                  }
+                });
+              }
+            }
+            if (swapped) break;
+          }
+        }
+      }
+
+      if (!swapped) break;
+    }
+
+    for (let tuneAttempt = 0; tuneAttempt < 200; tuneAttempt++) {
+      const sr = simpleScore / Math.max(currentScore, 1);
+      const mr = mediumScore / Math.max(currentScore, 1);
+      const hr = hardScore / Math.max(currentScore, 1);
+      const sDiff = sr - targetRatio.simple;
+      const mDiff = mr - targetRatio.medium;
+      const hDiff = hr - targetRatio.hard;
+      const tolerance = 0.055;
+      if (Math.abs(sDiff) <= tolerance && Math.abs(mDiff) <= tolerance && Math.abs(hDiff) <= tolerance) break;
+
+      const overDiff = [['简单', sDiff], ['中等', mDiff], ['困难', hDiff]].sort((a, b) => b[1] - a[1])[0][0];
+      const underDiff = [['简单', sDiff], ['中等', mDiff], ['困难', hDiff]].sort((a, b) => a[1] - b[1])[0][0];
+      if (overDiff === underDiff) break;
+
+      const overQs = shuffleArray(currentPaper.filter(q => q.difficulty === overDiff));
+      let tuned = false;
+      for (const r of overQs) {
+        const rKPs = r.knowledge.filter(k => knowledgeList.includes(k));
+        const allRKPCovered = rKPs.every(k => (knowledgeQuestionCount[k] || 0) > 1);
+        if (!allRKPCovered) continue;
+
+        const underCands = shuffleArray(availableQuestions.filter(q =>
+          q.difficulty === underDiff &&
+          !usedIdsThisPaper.has(q.id) &&
+          q.score === r.score
+        ));
+        for (const cand of underCands) {
+          const candKPs = cand.knowledge.filter(k => knowledgeList.includes(k));
+          const noNewKP = candKPs.every(k => coveredKnowledge.has(k));
+          if (!noNewKP && (knowledgeQuestionCount[candKPs[0]] === undefined)) {
+          }
+          const idx = currentPaper.findIndex(qq => qq.id === r.id);
+          if (idx < 0) continue;
+          currentPaper.splice(idx, 1);
+          currentScore -= r.score;
+          usedIdsThisPaper.delete(r.id);
+          if (r.difficulty === '简单') simpleScore -= r.score;
+          else if (r.difficulty === '中等') mediumScore -= r.score;
+          else hardScore -= r.score;
+          r.knowledge.forEach(k => {
+            if (knowledgeList.includes(k)) {
+              knowledgeQuestionCount[k]--;
+              if (knowledgeQuestionCount[k] === 0) coveredKnowledge.delete(k);
+            }
+          });
+
+          if (tryAddQuestion(cand)) {
+            tuned = true;
+            break;
+          } else {
+            currentPaper.splice(idx, 0, r);
+            currentScore += r.score;
+            usedIdsThisPaper.add(r.id);
+            if (r.difficulty === '简单') simpleScore += r.score;
+            else if (r.difficulty === '中等') mediumScore += r.score;
+            else hardScore += r.score;
+            r.knowledge.forEach(k => {
+              if (knowledgeList.includes(k)) {
+                knowledgeQuestionCount[k]++;
+                coveredKnowledge.add(k);
+              }
+            });
+          }
+        }
+        if (tuned) break;
+      }
+      if (!tuned) break;
+    }
+
+    const validation = validatePaper(currentPaper, targetScore, knowledgeList, targetRatio);
+    if (validation.valid && currentScore === targetScore && coveredKnowledge.size === knowledgeList.length) {
+      return {
+        questions: currentPaper,
+        totalScore: calculatePaperScore(currentPaper),
+        coverage: calculateKnowledgeCoverage(currentPaper, knowledgeList),
+        difficultyRatio: calculateDifficultyRatio(currentPaper),
+        difficultyScoreRatio: calculateDifficultyScoreRatio(currentPaper),
+        fitness: calculateFitness(currentPaper, targetScore, knowledgeList, targetRatio, knowledgeWeights),
+        validationErrors: []
+      };
     }
 
     const fitness = calculateFitness(currentPaper, targetScore, knowledgeList, targetRatio, knowledgeWeights);
     if (fitness > bestFitness) {
       bestFitness = fitness;
       bestPaper = [...currentPaper];
+      bestErrors = validation.errors;
+      if (currentScore !== targetScore) {
+        if (!bestErrors.some(e => e.includes('总分'))) {
+          bestErrors.push(`总分不达标：实际${currentScore}分`);
+        }
+      }
+      if (coveredKnowledge.size < knowledgeList.length) {
+        const miss = knowledgeList.filter(k => !coveredKnowledge.has(k));
+        if (!bestErrors.some(e => e.includes('知识点'))) {
+          bestErrors.push(`缺少知识点：${miss.join(',')}`);
+        }
+      }
     }
   }
 
@@ -187,18 +586,42 @@ function generateSinglePaper(targetScore, knowledgeList, targetRatio, knowledgeW
     totalScore: calculatePaperScore(bestPaper),
     coverage: calculateKnowledgeCoverage(bestPaper, knowledgeList),
     difficultyRatio: calculateDifficultyRatio(bestPaper),
-    fitness: bestFitness
+    difficultyScoreRatio: calculateDifficultyScoreRatio(bestPaper),
+    fitness: bestFitness,
+    validationErrors: bestErrors.length > 0 ? bestErrors : validatePaper(bestPaper, targetScore, knowledgeList, targetRatio).errors
   };
 }
 
 function generatePapers(targetScore, knowledgeList, targetRatio, knowledgeWeights, count = 3) {
   const papers = [];
-  const usedIds = [];
+  const maxPaperAttempts = 2000;
 
   for (let i = 0; i < count; i++) {
-    const paper = generateSinglePaper(targetScore, knowledgeList, targetRatio, knowledgeWeights, usedIds);
+    let paper = null;
+    let paperAttempts = 0;
+    let lastErrors = [];
+
+    while (paperAttempts < maxPaperAttempts) {
+      const candidate = generateSinglePaper(targetScore, knowledgeList, targetRatio, knowledgeWeights);
+      paperAttempts++;
+      lastErrors = candidate.validationErrors;
+
+      if (candidate.validationErrors.length === 0 &&
+          candidate.totalScore === targetScore &&
+          candidate.coverage === 1) {
+        paper = candidate;
+        break;
+      }
+    }
+
+    if (!paper) {
+      throw new Error(
+        `生成第${i + 1}套试卷时，经过${maxPaperAttempts}次尝试仍无法满足所有约束条件。` +
+        (lastErrors.length > 0 ? `最后一次错误：${lastErrors.join('；')}` : '')
+      );
+    }
+
     papers.push(paper);
-    paper.questions.forEach(q => usedIds.push(q.id));
   }
 
   papers.sort((a, b) => b.fitness - a.fitness);
@@ -207,9 +630,9 @@ function generatePapers(targetScore, knowledgeList, targetRatio, knowledgeWeight
     ...p,
     coverage: (p.coverage * 100).toFixed(1) + '%',
     difficultyRatio: {
-      simple: (p.difficultyRatio.simple * 100).toFixed(1) + '%',
-      medium: (p.difficultyRatio.medium * 100).toFixed(1) + '%',
-      hard: (p.difficultyRatio.hard * 100).toFixed(1) + '%'
+      simple: (p.difficultyScoreRatio.simple * 100).toFixed(1) + '%',
+      medium: (p.difficultyScoreRatio.medium * 100).toFixed(1) + '%',
+      hard: (p.difficultyScoreRatio.hard * 100).toFixed(1) + '%'
     }
   }));
 }
